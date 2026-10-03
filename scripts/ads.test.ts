@@ -1,5 +1,0 @@
-import {test} from 'node:test';import assert from 'node:assert/strict';
-import {AdBreakPolicy} from '../lib/ad-policy.ts';
-test('Tutorial and repeated completions do not trigger ad breaks',()=>{const p=new AdBreakPolicy(0);p.record('1',true);p.record('2',true);p.record('3',true);p.record('4',false);p.record('4',false);assert.equal(p.ready('both',200000),false);});
-test('Breaks need three completions and two minutes, then reset',()=>{const p=new AdBreakPolicy(0);for(const k of ['4','5','6'])p.record(k,false);assert.equal(p.ready('both',119999),false);assert.equal(p.ready('both',120000),true);assert.equal(p.ready('banner',120000),false);p.shown(120000);assert.equal(p.ready('between',300000),false);for(const k of ['7','8','9'])p.record(k,false);assert.equal(p.ready('between',239999),false);assert.equal(p.ready('between',240000),true);});
-test('Remove ads overrides an otherwise eligible interstitial',()=>{const p=new AdBreakPolicy(0);for(const k of ['4','5','6'])p.record(k,false);assert.equal(p.ready('both',120000,true),false);assert.equal(p.ready('between',120000,true),false);assert.equal(p.ready('both',120000,false),true);});

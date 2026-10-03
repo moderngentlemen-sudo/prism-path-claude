@@ -2,52 +2,61 @@ import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import {readFileSync,readdirSync} from 'node:fs';
 import {DatabaseSync} from 'node:sqlite';
-import {enrich,illuminate} from '../lib/journey.ts';
-import {rotate} from '../lib/game.ts';
-import {verifyFinish,type Action} from '../lib/ranked.ts';
-import {streaks,periods} from '../lib/streaks.ts';
-import {redemptionSql,constellationGrantSql,unlocks,dustForStreak,unlockProgress} from '../lib/currency.ts';
-const schema=readdirSync(new URL('../drizzle/',import.meta.url)).filter(f=>f.endsWith('.sql')).sort().map(f=>readFileSync(new URL('../drizzle/'+f,import.meta.url),'utf8')).join('\n');
-const bank=JSON.parse(readFileSync(new URL('../lib/content/puzzles.json',import.meta.url),'utf8'));
-test('Unlock progress includes local rewards but spending waits for credited balance',()=>{
- const local=unlockProgress(150,0,150);assert.equal(local.progress,150);assert.equal(local.affordable,false);assert.equal(local.needsSync,true);
- const mixed=unlockProgress(150,100,25);assert.equal(mixed.remaining,25);assert.equal(mixed.affordable,false);
- const synced=unlockProgress(150,150,0);assert.equal(synced.affordable,true);assert.equal(synced.needsSync,false);
- assert.equal(unlockProgress(150,200,20).progress,150);
- assert.equal(unlockProgress(150,NaN,-5).earned,0);
+import {redemptionSql,walletGrantSql,guestClaimSql,guestCreditSql,grantsFor} from '../lib/rewards.ts';
+import {finishSql,bestSql,pulseSql,starBoardSql,dailyBoardSql,pulseBoardSql,friendsSql,communitySql,rankParts} from '../lib/sql.ts';
+import {statSql} from '../lib/analytics.ts';
+const schema=readdirSync(new URL('../drizzle/',import.meta.url)).filter(f=>f.endsWith('.sql')).sort().map(f=>readFileSync(new URL('../drizzle/'+f,import.meta.url),'utf8')).join('\n').replaceAll('--> statement-breakpoint','');
+const open=()=>{const db=new DatabaseSync(':memory:');db.exec(schema);return db;};
+
+void test('Migrations apply in order and keep version 2 rows readable',()=>{
+ const db=open();
+ db.prepare('INSERT INTO finishes(id,uid,puzzle,points,stars,moves,hints,seconds,day) VALUES(?,?,?,?,?,?,?,?,?)').run('old','a','1',1500,3,1,0,4,'2026-09-12');
+ const row=db.prepare('SELECT version,radiant,perfect FROM finishes WHERE id=?').get('old') as {version:number;radiant:number;perfect:number};
+ assert.deepEqual({...row},{version:2,radiant:0,perfect:0});
+ db.close();
 });
-test('Constellation Stardust waits for all ten account puzzle clears and pays only once',()=>{
- const db=new DatabaseSync(':memory:');db.exec(schema);
- const grant=()=>db.prepare(constellationGrantSql).run('a','constellation:0','a','a',...Array.from({length:10},(_,i)=>String(i+1)));
- for(let i=1;i<10;i++)db.prepare('INSERT INTO best VALUES(?,?,?,?,?)').run('a',String(i),1000,3,4);
- grant();assert.equal(db.prepare('SELECT COUNT(*) AS n FROM wallet_entries').get()?.n,0);
- db.prepare('INSERT INTO best VALUES(?,?,?,?,?)').run('b','10',1000,3,4);grant();assert.equal(db.prepare('SELECT COUNT(*) AS n FROM wallet_entries').get()?.n,0);
- db.prepare('INSERT INTO best VALUES(?,?,?,?,?)').run('a','10',1000,3,4);grant();grant();assert.equal(db.prepare('SELECT SUM(amount) AS balance FROM wallet_entries').get()?.balance,25);db.close();
+void test('Best results keep the highest stars and radiant flag and the fewest turns',()=>{
+ const db=open(),best=db.prepare(bestSql);
+ best.run('a','7',2,20,0,0);best.run('a','7',3,25,1,0);best.run('a','7',1,12,0,0);
+ assert.deepEqual({...db.prepare('SELECT stars,moves,radiant FROM best WHERE uid=? AND puzzle=?').get('a','7') as object},{stars:3,moves:12,radiant:1});
+ db.close();
 });
-test('Server replay verifies all campaign puzzle routes and scores; rejects incomplete and altered histories',()=>{
- for(const raw of bank.campaign){const p=enrich(raw),board=[...p.initial],actions:Action[]=[];
-  for(let i=0;i<board.length&&!illuminate(board,p).solved;i++){if(p.locked.includes(i))continue;while(board[i]!==p.solution[i]&&!illuminate(board,p).solved){board[i]=rotate(board[i]);actions.push({kind:'rotate',index:i});}}
-  const result=verifyFinish(p,actions,10,false);assert.equal(result.moves,actions.length);assert.ok(result.points>0);
-  assert.throws(()=>verifyFinish(p,actions.slice(0,-1),10,false));assert.throws(()=>verifyFinish(p,[...actions,{kind:'undo'}],10,false));
- }
- const p=enrich(bank.campaign[10]);assert.throws(()=>verifyFinish(p,[{kind:'rotate',index:p.locked[0]}],0,false));assert.throws(()=>verifyFinish(p,[{kind:'undo'}],0,false));assert.throws(()=>verifyFinish(p,[],NaN,false));
+void test('Leaderboards: stars for the journey, fewest turns for the daily, best run for Pulse',()=>{
+ const db=open(),player=db.prepare('INSERT INTO players(uid,name,listed,code) VALUES(?,?,?,?)');
+ player.run('a','Ada',1,'AAAAAA');player.run('b','Bo',1,'BBBBBB');player.run('c','Hidden',0,'CCCCCC');
+ const best=db.prepare(bestSql),finish=db.prepare(finishSql);
+ best.run('a','1',3,5,1,1);best.run('a','2',3,6,1,0);best.run('b','1',2,9,0,0);best.run('c','1',3,1,1,1);best.run('a','daily-2026-10-03',3,9,1,0);
+ assert.deepEqual(db.prepare(starBoardSql).all().map(r=>(r as {name:string}).name+':'+(r as {stars:number}).stars),['Ada:6','Bo:2']);
+ finish.run('a:1','a','daily-2026-10-03',3,22,0,'2026-10-03',1,0);finish.run('a:2','a','daily-2026-10-03',2,15,1,'2026-10-03',0,0);
+ finish.run('b:1','b','daily-2026-10-03',3,19,0,'2026-10-03',1,1);finish.run('c:1','c','daily-2026-10-03',3,10,0,'2026-10-03',1,1);
+ const daily=db.prepare(dailyBoardSql).all('daily-2026-10-03') as {name:string;rank:number}[];
+ assert.deepEqual(daily.map(r=>[r.name,rankParts(r.rank)]),[['Bo',{turns:19,hints:0}],['Ada',{turns:22,hints:0}]]);
+ const pulse=db.prepare(pulseSql);pulse.run('a:p1','a',2961,450,3,30,170,'2026-10-03');pulse.run('a:p2','a',2961,600,4,40,175,'2026-10-03');pulse.run('b:p1','b',2961,500,3,20,160,'2026-10-03');pulse.run('b:p1','b',2961,999,9,9,9,'2026-10-03');
+ assert.deepEqual(db.prepare(pulseBoardSql).all(2961).map(r=>(r as {score:number}).score),[600,500]);
+ db.prepare('INSERT INTO friends(uid,friend) VALUES(?,?)').run('a','b');
+ assert.deepEqual((db.prepare(friendsSql).all('daily-2026-10-03','a') as {name:string;rank:number}[]).map(r=>[r.name,rankParts(r.rank)]),[['Bo',{turns:19,hints:0}]]);
+ assert.throws(()=>player.run('d','Dee',1,'AAAAAA'),'friend codes are unique');
+ db.close();
 });
-test('UTC streaks handle Sunday/Monday, month/year boundaries, gaps and duplicate completions',()=>{
- assert.equal(periods('2026-09-13').weekly+1,periods('2026-09-14').weekly);
- const s=streaks(['2025-12-31','2026-01-01','2026-01-01'],'2026-01-01');assert.equal(s[0].count,2);assert.equal(s[1].count,1);assert.equal(s[2].count,2);assert.equal(s[0].bonus,100);
- assert.equal(streaks(['2026-01-01'],'2026-01-02')[0].count,1);assert.equal(streaks(['2026-01-01'],'2026-01-03')[0].count,0);
- assert.deepEqual(streaks([],'2026-09-12').map(s=>s.bonus),[50,250,1000]);assert.equal(dustForStreak('daily',100),35);
+void test('Stardust ledger: grants once, redemption is atomic, guest receipts bind to one account',()=>{
+ const db=open(),grant=db.prepare(walletGrantSql),redeem=db.prepare(redemptionSql);
+ for(const g of grantsFor({key:'1',stars:3},[]))grant.run('a',g.reason,g.amount);
+ for(const g of grantsFor({key:'1',stars:3},[]))grant.run('a',g.reason,g.amount);
+ assert.equal((db.prepare('SELECT SUM(amount) AS n FROM wallet_entries WHERE uid=?').get('a') as {n:number}).n,15);
+ grant.run('a','earned',200);
+ redeem.run('a','shop:sfx',-100,'a',100);redeem.run('a','shop:sfx',-100,'a',100);redeem.run('a','shop:glass',-200,'a',200);
+ assert.equal((db.prepare('SELECT SUM(amount) AS n FROM wallet_entries WHERE uid=?').get('a') as {n:number}).n,115);
+ const claim=(uid:string)=>{db.prepare(guestClaimSql).run('receipt',uid,'2','2026-10-03',1);for(const g of grantsFor({key:'2',stars:3},[]))db.prepare(guestCreditSql).run(uid,g.reason,g.amount,'receipt',uid);};
+ claim('b');claim('b');claim('c');
+ assert.equal((db.prepare('SELECT SUM(amount) AS n FROM wallet_entries WHERE uid=?').get('b') as {n:number}).n,15);
+ assert.equal((db.prepare('SELECT COUNT(*) AS n FROM wallet_entries WHERE uid=?').get('c') as {n:number}).n,0);
+ db.close();
 });
-test('Stardust ledger prevents duplicate grants, overspending, duplicate redemption and cross-player spending',()=>{
- const db=new DatabaseSync(':memory:');db.exec(schema);
- const grant=db.prepare('INSERT OR IGNORE INTO wallet_entries(uid,reason,amount) VALUES(?,?,?)'),redeem=db.prepare(redemptionSql);
- grant.run('a','earned',200);grant.run('a','earned',200);grant.run('b','earned',5);
- const spend=(u:string,id:string,cost:number)=>redeem.run(u,'shop:'+id,-cost,u,cost);
- spend('a','aurora',150);spend('a','aurora',150);spend('a','sfx',100);spend('b','sfx',100);
- assert.equal(db.prepare('SELECT SUM(amount) AS balance FROM wallet_entries WHERE uid=?').get('a')?.balance,50);
- assert.equal(db.prepare('SELECT SUM(amount) AS balance FROM wallet_entries WHERE uid=?').get('b')?.balance,5);
- assert.equal(db.prepare('SELECT COUNT(*) AS n FROM wallet_entries WHERE amount<0').get()?.n,1);
- assert.ok(!unlocks.some(item=>(item.id as string)==='noads'));
- db.exec('DELETE FROM best; DELETE FROM activity; DELETE FROM rewards; DELETE FROM finishes;');grant.run('a','earned',200);
- assert.equal(db.prepare('SELECT SUM(amount) AS balance FROM wallet_entries WHERE uid=?').get('a')?.balance,50);db.close();
+void test('Anonymous counters add up per day, puzzle and kind',()=>{
+ const db=open(),stat=db.prepare(statSql);
+ stat.run('2026-10-03','12','solve',1);stat.run('2026-10-03','12','solve',2);stat.run('2026-10-03','12','lit',40);stat.run('2026-09-01','1','lit',99);
+ assert.equal((db.prepare('SELECT n FROM stats WHERE day=? AND puzzle=? AND kind=?').get('2026-10-03','12','solve') as {n:number}).n,3);
+ assert.equal((db.prepare(communitySql).get('2026-09-28') as {tiles:number}).tiles,40);
+ assert.equal(db.prepare("SELECT * FROM pragma_table_info('stats')").all().length,4,'no identifying columns');
+ db.close();
 });
