@@ -1,26 +1,66 @@
 # Prism Path device playtest
 
-Prepared September 13, 2026. This is a test plan, not a record of completed device tests.
+Updated October 3, 2026 for the light-and-prisms build. This is a test plan, not a record of completed tests.
 
-## Short browser session on iPhone and iPad
+For each session, record the device, OS, browser, orientation, puzzle and any steps to reproduce a problem.
 
-Record the device, OS, browser, orientation, puzzle, and any reproduction steps.
+## First session, without coaching
 
-- Play puzzles 1–3 without coaching. Ask the player to point to the inlet and outlet before turning. Note hesitation and accidental turns.
-- Play a fixed-tile and receiver puzzle. Check that tapping its objective marker brings the correct tile into view, that active symbols remain identifiable, and that reaching the exit without all objectives explains what is missing.
-- At narrow widths, landscape and 200% text size, check the board, sticky demo banner, objective chips, shop buttons and Next puzzle for overlap or clipped text.
-- Complete a puzzle on the move target, then complete a constellation. Check that rewards remain readable and Next puzzle is reachable throughout. Repeat with reduced motion.
-- In Relax, select each path style, skip, request help and reload mid-puzzle. Verify that choosing a future style preserves the current path and the separate quiet sky.
-- Listen to each instrument for at least two minutes. Compare tile, completion and next-puzzle sounds at a comfortable speaker and headphone volume. Test music mute, effects mute, first-tap playback, app switching and an interruption such as a phone call.
-- Earn guest Stardust, reconnect an account and retry synchronization after a network interruption. Confirm the reward credits once, progress becomes spendable, and ownership persists. Use a dedicated test account.
-- Revisit an old puzzle and confirm replaying cannot duplicate first-clear or constellation currency. Check that returning after a missed period retains points, Stardust and unlocks.
+- Hand over the game on a fresh browser. Puzzle 1 opens with no menu. Note how long the player takes to make the first turn, and whether they read the caption.
+- Watch puzzles 1–10. Do players find turning back (hold, right-click or two-finger tap) on their own, or only after reading the controls in Settings?
+- After the first solve, does the player notice the sky button? After ten, the shop?
+- Ask what the third star means. Players should be able to explain dark tiles and leaks in their own words.
+
+## Ideas and difficulty
+
+- Play the first puzzle of each constellation cold:
+  - 21: bridges
+  - 31: mirrors
+  - 41: prisms
+  - 51: mixing
+  - 61: two inlets
+  - 71: filters
+- Note whether the lesson line and the tile art are enough. The prism rule (amber left, mint straight, violet right) is the one most likely to need help.
+- Rate each tenth puzzle for difficulty from 1 to 5, and compare with the solver grades in `lib/content/puzzles-v3.json`. Flag any puzzle that felt like guessing.
+- Play a week of dailies. Monday should feel easiest and Sunday hardest.
+
+## Hints, undo and stars
+
+- Use all three hint steps on one puzzle. Do players understand that only "Turn it for me" costs a star? Does "Try again" feel fair?
+- Undo many times in a row, then reset. Check that stars already earned are never lost.
+
+## Modes
+
+- Drift: does the beam visibly carry on into the next board? Is "Another path" clear? Reload in the middle of a board and check it resumes.
+- Pulse: does the timer feel optional and fair? Is the scoring clear from the intro? Post a score with a test account.
+
+## Sound and touch
+
+- Listen to each instrument for at least two minutes across three constellations, at a comfortable speaker volume and on headphones. Note harsh notes, clicks or fatigue.
+- Test the following:
+  - the first tap starting audio
+  - the music switch, effects switch and volume
+  - switching apps and an interruption such as a phone call
+  - the iPhone silent switch
+- On Android, check that vibration follows the setting. On iPhone, check that the setting is hidden.
+
+## Accessibility
+
+- With VoiceOver (iOS and macOS) and TalkBack (Android), solve puzzle 1 and a prism puzzle using only the tile descriptions.
+- Play a mixing puzzle with a keyboard only.
+- Play with high-contrast colours and light patterns, ideally with colour-blind players.
+- Turn on Still light and reduced motion. Nothing should animate, and nothing should be lost.
+- At 200% text size, landscape on a phone and narrow widths, check that the caption, targets, results card and panels don't overlap or clip.
+
+## Accounts and Stardust
+
+- Earn Stardust as a guest, then connect a dedicated test account. Check that it is credited once, becomes spendable and survives a reload. Interrupt the network during the sync and retry.
+- Replay old puzzles and confirm that replaying never grants first-clear or constellation Stardust twice.
+- Open the game with a version-2 save from the published site. Stars, palettes and unlocks should carry over, and the sky, shop and modes should all be visible.
+- Add a friend by code. Check that their daily result appears and the boards rank by fewest turns.
 
 ## Native build prerequisite
 
-The current native source is not present in this workspace, and this Linux environment has neither Xcode nor Swift. Attach the latest native iPhone/iPad source before native integration work. Keep the existing native editions intact while applying browser-approved changes on a separate development branch.
+This Linux environment has neither Xcode nor Swift, and no Capacitor shell has been built (proposal item X8). On an Apple build environment, create the shell, then compile and run it on iPhone and iPad before treating native support as verified. Haptics then use Capacitor's plugin.
 
-On an Apple build environment, compile the app and run it on iPhone and iPad before treating native support as verified. Configure the intended StoreKit products and AdMob/UMP setup, then use sandbox purchases and test ads to check restoration, consent behavior and both ad placements. The browser's proposed $1/month ad removal must be deliberately reconciled with the native product setup; a browser UI change does not configure an Apple subscription.
-
-## Content work still to schedule
-
-Puzzles 16–90 retain their existing generated layouts. Use first-session playtest findings to author and tune later constellation chapters, preserving old saved-run and queued-reward compatibility as in the first fifteen. Extend Journey background compositions only after listening feedback on the current audio balance.
+Full Sky purchases need a real StoreKit product and receipt validation; the browser only shows the planned price. Keep the existing native editions intact, and apply browser-approved changes on a separate development branch.
