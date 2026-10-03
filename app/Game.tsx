@@ -1,224 +1,131 @@
 'use client';
-import { useState, useEffect, useRef, useMemo } from 'react';
-import { RotateCw, Undo2, Sparkles, ShoppingBag, Grid2X2, Sun, ArrowRight, Check, LockKeyhole, Volume2, VolumeX, Star, Music2, Settings2 } from 'lucide-react';
-import { Dialog, DialogContent, DialogTitle, DialogDescription } from '@/components/ui/dialog';
-import {Slider} from '@/components/ui/slider';
-import {Switch} from '@/components/ui/switch';
-import {CompletionSummary} from './CompletionSummary';
-import {DustToast} from './DustToast';
-import './dust.css';
+import {useEffect,useMemo,useRef,useState,useSyncExternalStore} from 'react';
+import {Dialog,DialogContent,DialogTitle,DialogDescription} from '@/components/ui/dialog';
+import {PlayScreen,clearRuns,type Outcome} from './play/PlayScreen';
+import {SkyHub} from './sky/SkyHub';
+import {Drift} from './modes/Drift';
+import {Pulse} from './modes/Pulse';
+import {SettingsPanel} from './panels/SettingsPanel';
+import {ShopPanel} from './panels/ShopPanel';
+import {PlayerPanel} from './panels/PlayerPanel';
+import {DailyPanel} from './panels/DailyPanel';
+import {useSettings} from './useSettings';
 import {usePlayer} from './usePlayer';
-import {PlayerPanel} from './PlayerPanel';
-import {StardustShop} from './StardustShop';
-import './player.css';
-import {RelaxGame} from './RelaxGame';
-import {usePace} from './usePace';
-import {useMusic} from './useMusic';
-import {useAudioPreview} from './useAudioPreview';
-import {AdBreakPolicy,type AdMode} from '@/lib/ad-policy';
-import bank from '@/lib/content/puzzles.json';
-import {enrich, illuminate, explainHint, canPlay, type JourneyPuzzle} from '@/lib/journey';
-const data={campaign:bank.campaign.map(enrich),daily:bank.daily.map(enrich)};
-import { rotate, starsFor, ports, dailyIndex } from '@/lib/game';
+import {useStats} from './useStats';
+import {audio} from './audio/engine';
+import {palettes as beams} from './board/render';
+import {campaign,constellationNames,dailyFor,dayKey,ideas,weekdayIdeas} from '@/lib/content';
+import {restoreSave,blankSave,nextPlayable,solvedCount,canPlay,chapterOpen,type Save} from '@/lib/save';
+import {palettes,constellationDone} from '@/lib/rewards';
+import {dailyStreak} from '@/lib/streaks';
+import {story,prologue} from '@/lib/story';
+import {shareText} from '@/lib/share';
+import type {InstrumentId} from '@/lib/music';
 
-type Save={stars:Record<string,number>;scores:Record<string,number>;theme:string;last:number;sound:boolean};
-import {startRun,restoreRun,serializeRun,resumeIndex,type Run} from '@/lib/session';
-import {JourneyMap,DailyCalendar} from './JourneyMap';
-import {MechanicLesson} from './MechanicLesson';
-import {EnergyStream} from './EnergyStream';
-import {SkyMenu} from './SkyMenu';
-import {Constellation,StarAtlas} from './Constellation';
-import {BoardObjectives} from './BoardObjectives';
-import {chapterFocus} from '@/lib/chapters';
-import {puzzleScore,cleanScores} from '@/lib/scoring';
-import {newlyLit} from '@/lib/energy';
-const blank:Save={stars:{},scores:{},theme:'mint',last:0,sound:true};
-const tracks=[{id:'quiet-orbit',name:'Quiet Orbit',free:true},{id:'moonrise',name:'Moonrise',free:false},{id:'drift',name:'Drift',free:false}];
-const extras=[{id:'noads',name:'Remove ads',price:'$1/month',description:'Remove banners and between-puzzle ads while subscribed. Proposed monthly subscription.'},{id:'music',name:'Night music',price:'$1.99',description:'Two original looping tracks: Moonrise and Drift. Yours to switch between.'},{id:'sfx',name:'Crystal sounds',price:'$0.99',description:'Bright bell tones for tile turns and a crystalline completion chime.'}];
-const themes=[{id:'mint',name:'First light',color:'#c5f17c',price:'Included'},{id:'aurora',name:'Aurora',color:'#b8a1ff',price:'$1.99'},{id:'sunset',name:'Sunset',color:'#ffbc7d',price:'$1.99'}];
-const start=startRun;
-const progressKey='prism-path-save-v2';
-const runKey='prism-path-runs-v2';
-type ModelContext={registerTool:(t:{name:string;description:string;inputSchema:object;annotations:{readOnlyHint:boolean};execute:(input:unknown)=>unknown},options:{signal:AbortSignal})=>Promise<void>|void};
-export default function Game(){
- const [mode,setMode]=useState<'journey'|'relax'|null>(null);
- useEffect(()=>{try{setMode(localStorage.getItem('prism-play-mode')==='relax'?'relax':'journey');}catch{setMode('journey');}},[]);
- const chooseMode=(v:'journey'|'relax')=>{try{localStorage.setItem('prism-play-mode',v);}catch{}setMode(v);};
- if(mode===null)return <main className="game-shell" aria-busy="true"/>;
- return mode==='relax'?<RelaxGame onJourney={()=>chooseMode('journey')}/>:<JourneyGame onRelax={()=>chooseMode('relax')}/>;
-}
-function JourneyGame({onRelax}:{onRelax:()=>void}){
- const player=usePlayer();
- const [save,setSave]=useState<Save>(blank),[loaded,setLoaded]=useState(false),[storageWarning,setStorageWarning]=useState(false);
- const [run,setRun]=useState<Run>(()=>start(data.campaign[0]));
- const [panel,setPanel]=useState<'shop'|'levels'|'daily'|'atlas'|'player'|null>(null),[trial,setTrial]=useState(false),[themeTrial,setThemeTrial]=useState<string[]>([]);
- const [notice,setNotice]=useState(''),[purchase,setPurchase]=useState<string|null>(null),[date,setDate]=useState(()=>new Date());
- const [resetOpen,setResetOpen]=useState(false),[resetTick,setResetTick]=useState(0),[lessonOpen,setLessonOpen]=useState(false);
- const [restartGameOpen,setRestartGameOpen]=useState(false);
- const [objectiveAt,setObjectiveAt]=useState<number|null>(null);
- useEffect(()=>setObjectiveAt(null),[run.key,run.board]);
- const runs=useRef<Record<string,unknown>>({}),lessonSeen=useRef(new Set<number>()),paceRef=useRef(0),loadedRef=useRef(false);
- const [mediaPanel,setMediaPanel]=useState(false),[adOpen,setAdOpen]=useState(false),[adMode]=useState<AdMode>('both');
- const adPolicy=useRef(new AdBreakPolicy()),adContinuation=useRef<(()=>void)|null>(null);
- const [upgrades,setUpgrades]=useState<string[]>([]),[musicTrack,setMusicTrack]=useState('quiet-orbit'),[soundStyle,setSoundStyle]=useState('classic');
- const adFree=upgrades.includes('noads');
- const sample=useAudioPreview(adOpen);
- useEffect(()=>{sample.stop();},[panel]);
- const music=useMusic(adOpen||!!sample.active,musicTrack,Object.keys(save.stars).length,run.daily?1:run.puzzle.stage);
- const soundStyleRef=useRef(soundStyle);soundStyleRef.current=soundStyle;
- const [spin,setSpin]=useState<{at:number;tick:number}|null>(null);
- const [hint,setHint]=useState<ReturnType<typeof explainHint>>(null),[haptics,setHaptics]=useState(false);
- const hapticsRef=useRef(false);hapticsRef.current=haptics;
- const vibrate=(win=false)=>{if(hapticsRef.current&&typeof navigator.vibrate==='function')navigator.vibrate(win?[25,45,40]:12);};
- const runRef=useRef(run),saveRef=useRef(save),trialRef=useRef(trial);runRef.current=run;saveRef.current=save;trialRef.current=trial;
- const [energized,setEnergized]=useState<number[]>([]);
- const [newStar,setNewStar]=useState<string|null>(null);
- const [completedScore,setCompletedScore]=useState<ReturnType<typeof puzzleScore>|null>(null);
- const completionPending=useRef(false);
- const noticeTimer=useRef<ReturnType<typeof setTimeout>|null>(null);
- const audio=useRef<AudioContext|null>(null);
- const lit=useMemo(()=>illuminate(run.board,run.puzzle),[run.board,run.puzzle]);
- const exitReached=lit.lit.has(run.board.length-1)&&!!(run.board[run.board.length-1]&2);
- const receiverBlocked=exitReached&&lit.received<run.puzzle.receivers.length;
- const darkLocks=run.puzzle.locked.filter(i=>!lit.lit.has(i));
- const pace=usePace(`${loaded}:${run.key}:${resetTick}`,run.moves,lit.solved,run.puzzle.paceSeconds,adOpen||panel!==null||mediaPanel||purchase!==null||lessonOpen||resetOpen||restartGameOpen,run.elapsed);
- paceRef.current=pace.elapsed;
- const intensity=Math.min(4,Math.floor((run.puzzle.stage-1)/20));
- const urgent=!pace.calm&&run.puzzle.paceSeconds>0&&pace.started&&pace.remaining>0&&pace.remaining<run.puzzle.paceSeconds*.25;
- const stars=starsFor(run.moves,run.puzzle.par,run.hints);
- const score=puzzleScore(run.moves,run.puzzle.par,pace.remaining,run.puzzle.paceSeconds,pace.calm,run.puzzle.id);
- const pointTotal=Object.values(save.scores).reduce((a,b)=>a+b,0);
- const displayedScore=completedScore??score;
- const constellationGroup=Math.floor((run.puzzle.id-1)/10);
- const constellationJustCompleted=!run.daily&&newStar===run.key&&Array.from({length:10},(_,i)=>!!save.stars[String(constellationGroup*10+i+1)]).every(Boolean);
- const total=Object.values(save.stars).reduce((sum,n)=>sum+n,0);
- const earned=Array.from({length:30},(_,i)=>i).find(i=>!save.stars[String(i+1)])??29;
- const announce=(message:string)=>{setNotice(message);if(noticeTimer.current)clearTimeout(noticeTimer.current);noticeTimer.current=setTimeout(()=>setNotice(''),4000);};
- const tone=(win=false,style=soundStyleRef.current,force=false)=>{if(!saveRef.current.sound&&!force)return;try{audio.current??=new AudioContext();void audio.current.resume();const ctx=audio.current,crystal=style==='crystal';const notes=crystal?(win?[1046.5,1318.5,1568]:[880]):[win?660:300];notes.forEach((hz,i)=>{const at=ctx.currentTime+i*.09,osc=ctx.createOscillator(),gain=ctx.createGain();osc.connect(gain);gain.connect(ctx.destination);osc.type=crystal?'sine':'triangle';osc.frequency.setValueAtTime(hz,at);if(!crystal)osc.frequency.exponentialRampToValueAtTime(win?990:420,at+.1);gain.gain.setValueAtTime(.001,at);gain.gain.exponentialRampToValueAtTime(.105,at+.01);gain.gain.exponentialRampToValueAtTime(.001,at+(crystal?.5:.25));osc.start(at);osc.stop(at+(crystal?.52:.26));});}catch{}};
- const previewUnlock=(id:string)=>{sample.stop();if(id==='music')void sample.play('moonrise');else if(id==='sfx')tone(true,'crystal',true);};
- const connectionFeedback=(before:number[],after:number[],puzzle:JourneyPuzzle)=>{
-  const fresh=newlyLit(illuminate(before,puzzle).lit,illuminate(after,puzzle).lit);setEnergized(fresh);
-  if(!saveRef.current.sound)return;
-  try{
-   audio.current??=new AudioContext();const ctx=audio.current;void ctx.resume();
-   const play=(frequency:number,when:number,duration:number,level:number,type:OscillatorType,end=frequency)=>{const osc=ctx.createOscillator(),gain=ctx.createGain();osc.connect(gain);gain.connect(ctx.destination);osc.type=type;osc.frequency.setValueAtTime(frequency,when);osc.frequency.exponentialRampToValueAtTime(end,when+duration);gain.gain.setValueAtTime(.0001,when);gain.gain.exponentialRampToValueAtTime(level*3,when+.004);gain.gain.exponentialRampToValueAtTime(.0001,when+duration);osc.start(when);osc.stop(when+duration+.01);osc.onended=()=>{osc.disconnect();gain.disconnect();};};
-   const now=ctx.currentTime,crystal=soundStyleRef.current==='crystal';
-   // A soft wooden tap: muted contact texture and a low, rounded resonance.
-   const variation=.97+Math.random()*.06;
-   play((crystal?720:430)*variation,now,.065,.023,'sine',(crystal?540:310)*variation);
-   play(185*variation,now,.045,.018,'sine',145*variation);
-   const texture=ctx.createBuffer(1,Math.ceil(ctx.sampleRate*.032),ctx.sampleRate),samples=texture.getChannelData(0);
-   for(let i=0;i<samples.length;i++)samples[i]=(Math.random()*2-1)*Math.exp(-i/(ctx.sampleRate*.006));
-   const contact=ctx.createBufferSource(),filter=ctx.createBiquadFilter(),touch=ctx.createGain();
-   contact.buffer=texture;filter.type='lowpass';filter.frequency.value=crystal?1900:1100;filter.Q.value=.5;
-   touch.gain.setValueAtTime(0,now);touch.gain.linearRampToValueAtTime(.096,now+.002);touch.gain.exponentialRampToValueAtTime(.0001,now+.032);
-   contact.connect(filter);filter.connect(touch);touch.connect(ctx.destination);contact.start(now);
-   contact.onended=()=>{contact.disconnect();filter.disconnect();touch.disconnect();};
-   if(fresh.length){play(crystal?880:660,now+.065,.24,.026,'sine');play(crystal?1320:990,now+.11,.28,.019,'sine');}
-  }catch{}
- };
- useEffect(()=>{
+type Screen={name:'play';index:number}|{name:'daily'}|{name:'sky';chapter:number}|{name:'drift'}|{name:'pulse'};
+type Panel='settings'|'shop'|'player'|'daily';
+const SAVE='prism-path-save-v3',PREVIEW='prism-full-sky-preview';
+const weekdayNames=['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'];
+const ideaLines=['Turn the tiles so light runs from every inlet to every outlet.','Pinned tiles never turn. Read them first, then build around them.','A bridge lets two beams cross without touching.','A mirror bounces light around a corner. Turn it to choose where each beam goes.','A prism splits white light: amber ▲ left, mint ● straight, violet ■ right.','Where colours meet, they mix. Feed each receiver exactly its colours.','Two inlets, two colours: keep them apart, or blend them on purpose.','A filter passes only its colours.','Every idea at once: read the receivers first.'];
+const themeWhite:Record<string,string>={sunset:'#fff0dc',aurora:'#efe6ff'};
+const panelTitles:Record<Panel,[string,string]>={settings:['Settings','Sound, light, controls and privacy.'],shop:['A little more light','Stardust buys sounds and music. Palettes are earned in the sky.'],player:['Your place in the sky','Profile, friends and boards.'],daily:['Today’s light','One puzzle a day, ranked by fewest turns.']};
+
+// The game renders only in the browser: the server sends the loading shell, then
+// the first client render reads the save and opens the right screen.
+const noSubscribe=()=>()=>{};
+function boot(){
+ let save=blankSave(),returning=false,preview=false,account=false;
  try{
-  const raw=JSON.parse(localStorage.getItem(progressKey)||localStorage.getItem('prism-path-save-v1')||'null');
-  const clean:Record<string,number>={};
-  if(raw?.stars&&typeof raw.stars==='object')for(const [key,value] of Object.entries(raw.stars))if((/^(?:[1-9]|[1-8][0-9]|90)$/.test(key)||/^daily-\d{4}-\d{2}-\d{2}$/.test(key))&&Number.isInteger(value)&&Number(value)>=1&&Number(value)<=3)clean[key]=Number(value);
-  const prefs=JSON.parse(localStorage.getItem('prism-preferences-v2')||'{}');
-  setHaptics(prefs.haptics===true);
-  const previews=JSON.parse(sessionStorage.getItem('prism-previews-v2')||'{}');
-  const pack=previews.pack===true;trialRef.current=pack;setTrial(pack);
-  const upgrades=Array.isArray(previews.upgrades)?previews.upgrades.filter((v:unknown)=>typeof v==='string'&&extras.some(e=>e.id===v)):[];
-  const palettes=Array.isArray(previews.palettes)?previews.palettes.filter((v:unknown)=>v==='aurora'||v==='sunset'):[];
-  setUpgrades(upgrades);setThemeTrial(palettes);
-  if(tracks.some(t=>t.id===prefs.track&&(t.free||upgrades.includes('music'))))setMusicTrack(prefs.track);
-  if(prefs.style==='crystal'&&upgrades.includes('sfx'))setSoundStyle('crystal');
-  const last=resumeIndex(raw?.last,clean,pack);
-  const savedRuns=JSON.parse(localStorage.getItem(runKey)||'{}');if(savedRuns&&typeof savedRuns==='object'&&!Array.isArray(savedRuns))runs.current=savedRuns;
-  setSave({stars:clean,scores:cleanScores(raw?.scores),last:Number.isInteger(raw?.last)?Math.max(0,Math.min(89,raw.last)):last,theme:palettes.includes(raw?.theme)?raw.theme:'mint',sound:raw?.sound!==false});
-  let restored=restoreRun(runs.current[String(last+1)],data.campaign[last])||start(data.campaign[last]);
-  const today='daily-'+new Date().toISOString().slice(0,10);
-  if(localStorage.getItem('prism-active-v2')===today)restored=restoreRun(runs.current[today],data.daily[dailyIndex(new Date())],true,today)||restored;
-  setRun(restored);runRef.current=restored;
-  const seen=JSON.parse(localStorage.getItem('prism-lessons-v2')||'[]');if(Array.isArray(seen))lessonSeen.current=new Set(seen.filter(Number.isInteger));
- }catch{setStorageWarning(true);}
- setLoaded(true);loadedRef.current=true;
- const timer=setInterval(()=>setDate(new Date()),60000);
- return()=>{clearInterval(timer);if(noticeTimer.current)clearTimeout(noticeTimer.current);};
- },[]);
- const persistRun=()=>{if(!loadedRef.current)return;try{runs.current[runRef.current.key]=serializeRun(runRef.current,paceRef.current);localStorage.setItem(runKey,JSON.stringify(runs.current));localStorage.setItem('prism-active-v2',runRef.current.key);}catch{setStorageWarning(true);}};
- useEffect(()=>{if(loaded)try{localStorage.setItem(progressKey,JSON.stringify(save));}catch{setStorageWarning(true);}},[save,loaded]);
- useEffect(()=>{if(!loaded)return;persistRun();const timer=setInterval(persistRun,1000);const onHidden=()=>{if(document.hidden)persistRun();};window.addEventListener('pagehide',persistRun);document.addEventListener('visibilitychange',onHidden);return()=>{clearInterval(timer);window.removeEventListener('pagehide',persistRun);document.removeEventListener('visibilitychange',onHidden);};},[run,loaded]);
- useEffect(()=>{if(!loaded)return;try{localStorage.setItem('prism-preferences-v2',JSON.stringify({haptics,track:musicTrack,style:soundStyle}));sessionStorage.setItem('prism-previews-v2',JSON.stringify({pack:trial,upgrades,palettes:themeTrial}));}catch{setStorageWarning(true);}},[loaded,haptics,musicTrack,soundStyle,trial,upgrades,themeTrial]);
- useEffect(()=>{if(new URLSearchParams(window.location.search).get('account')==='1')setPanel('player');},[]);
+  save=restoreSave(JSON.parse(localStorage.getItem(SAVE)||'null'),JSON.parse(localStorage.getItem('prism-path-save-v2')||localStorage.getItem('prism-path-save-v1')||'null'));
+  returning=!localStorage.getItem(SAVE)&&solvedCount(save.stars)>0;preview=sessionStorage.getItem(PREVIEW)==='1';account=new URLSearchParams(location.search).get('account')==='1';
+ }catch{}
+ // First visit opens straight into puzzle 1; returning players continue where they left off.
+ const target=nextPlayable(save.stars,preview,save.last);
+ const screen:Screen=account?{name:'sky',chapter:Math.floor(Math.max(0,target)/10)}:target<0?{name:'sky',chapter:8}:{name:'play',index:canPlay(save.last,save.stars,false)&&!save.stars[String(save.last+1)]?save.last:target};
+ return {save,returning,preview,screen,panel:account?'player' as const:null};
+}
+
+export default function Game(){
+ const hydrated=useSyncExternalStore(noSubscribe,()=>true,()=>false);
+ const {settings,update}=useSettings();
+ const player=usePlayer();
+ const stat=useStats(settings.stats);
+ const [start]=useState(boot);
+ const [save,setSave]=useState<Save>(start.save),[screen,setScreen]=useState<Screen>(start.screen),[panel,setPanel]=useState<Panel|null>(start.panel),[preview,setPreview]=useState(start.preview);
+ const [toast,setToast]=useState(''),[feel,setFeel]=useState<{key:string;chapter:number}|null>(null),[storyFor,setStoryFor]=useState<{key:string;text:string}|null>(null),[today,setToday]=useState(()=>new Date());
+ const toastTimer=useRef<ReturnType<typeof setTimeout>|null>(null),returning=start.returning;
+ const say=(text:string)=>{setToast(text);if(toastTimer.current)clearTimeout(toastTimer.current);toastTimer.current=setTimeout(()=>setToast(''),3500);};
+ const keep=(next:Save)=>{setSave(next);try{localStorage.setItem(SAVE,JSON.stringify(next));}catch{say('This browser cannot save progress right now.');}};
+ useEffect(()=>{const t=setInterval(()=>setToday(new Date()),60000);return()=>clearInterval(t);},[]);
+ const owned=useMemo(()=>player.data?.owned??[],[player.data?.owned]);
+ const fullSky=preview||owned.includes('pack');
+ const earned=useMemo(()=>palettes.filter(p=>p.chapter>=0&&(constellationDone(save.stars,p.chapter)||owned.includes(p.id))).map(p=>p.id),[save.stars,owned]);
  useEffect(()=>{
-  if(!loaded||!player.data?.profile)return;
-  const d=player.data;
-  setSave(s=>{const stars={...s.stars},scores={...s.scores};for(const row of d.scores||[]){stars[row.puzzle]=Math.max(stars[row.puzzle]||0,row.stars);scores[row.puzzle]=Math.max(scores[row.puzzle]||0,row.points);}return {...s,stars,scores};});
-  if(d.owned?.includes('pack')){setTrial(true);trialRef.current=true;}
-  setUpgrades(v=>[...new Set([...v,...(d.owned||[]).filter(id=>id==='music'||id==='sfx')])]);
-  setThemeTrial(v=>[...new Set([...v,...(d.owned||[]).filter(id=>id==='aurora'||id==='sunset')])]);
- },[loaded,player.data]);
- const mechanicStage=run.puzzle.stage>=61?61:run.puzzle.stage>=41?41:run.puzzle.stage>=21?21:run.puzzle.stage>=11?11:0;
- useEffect(()=>{if(loaded&&!run.daily&&mechanicStage&&!lessonSeen.current.has(mechanicStage))setLessonOpen(true);},[loaded,run.key,mechanicStage]);
- const closeLesson=()=>{lessonSeen.current.add(mechanicStage);setLessonOpen(false);try{localStorage.setItem('prism-lessons-v2',JSON.stringify([...lessonSeen.current]));}catch{}};
- useEffect(()=>{if(!loaded||!lit.solved||!completionPending.current)return;completionPending.current=false;setCompletedScore(score);if(run.actions?.length===run.moves)void player.finish(run.key,run.actions,pace.elapsed,pace.calm).catch(()=>announce('This attempt could not earn Stardust. Start a new puzzle to try again.'));else announce('Replay this puzzle to earn Stardust; this saved attempt predates reward records.');const first=Math.floor((run.puzzle.id-1)/10)*10+1;const milestone=!run.daily&&!saveRef.current.stars[run.key]&&Array.from({length:10},(_,i)=>first+i).every(id=>id===run.puzzle.id||!!saveRef.current.stars[String(id)]);setNewStar(saveRef.current.stars[run.key]?null:run.key);setSave(s=>({...s,scores:{...s.scores,[run.key]:Math.max(s.scores[run.key]||0,score.points)},stars:{...s.stars,[run.key]:Math.max(s.stars[run.key]||0,stars)}}));if(!music.enabled||music.volume===0)tone(true);music.celebrate(milestone,score.targetBonus>0);vibrate(true);adPolicy.current.record(run.key,!run.daily&&run.puzzle.id<=3);},[lit.solved,run.key,loaded]);
- const commit=(next:Run)=>{player.clearReward();setHint(null);setCompletedScore(null);setNewStar(null);setEnergized([]);runRef.current=next;setRun(next);};
- const restartGame=async()=>{
-  if(player.data?.profile&&!await player.reset()){announce('Account progress could not be reset. Please retry in Player.');return;}
-  const fresh={...saveRef.current,stars:{},scores:{},last:0};
-  try{localStorage.setItem(progressKey,JSON.stringify(fresh));localStorage.removeItem('prism-path-save-v1');localStorage.removeItem(runKey);localStorage.removeItem('prism-active-v2');localStorage.removeItem('prism-lessons-v2');}catch{setStorageWarning(true);announce('Progress could not be fully cleared from this browser. Please try again.');return;}
-  completionPending.current=false;runs.current={};lessonSeen.current=new Set();paceRef.current=0;saveRef.current=fresh;setSave(fresh);
-  adPolicy.current=new AdBreakPolicy();adContinuation.current=null;setAdOpen(false);setLessonOpen(false);setPanel(null);setSpin(null);
-  commit(start(data.campaign[0]));setResetTick(v=>v+1);setRestartGameOpen(false);setMediaPanel(false);announce('A fresh journey begins.');
+  const instrument:InstrumentId=settings.instrument==='piano'||owned.includes(settings.instrument)?settings.instrument:'piano';
+  const track=settings.track==='quiet-orbit'||owned.includes('music')?settings.track:'quiet-orbit';
+  audio.configure({effects:settings.effects,music:settings.music,volume:settings.volume,instrument,track:screen.name==='drift'?'relax-tide':track});
+ },[settings,owned,screen.name]);
+ const palette=useMemo(()=>{const base=beams[settings.colours];const white=earned.includes(settings.theme)?themeWhite[settings.theme]:undefined;return white?{...base,white}:base;},[settings.colours,settings.theme,earned]);
+ useEffect(()=>{document.documentElement.dataset.theme=earned.includes(settings.theme)?settings.theme:'mint';},[settings.theme,earned]);
+ const solvedN=solvedCount(save.stars),showSky=solvedN>=1||returning,showShop=solvedN>=10||returning,showModes=constellationDone(save.stars,0)||returning;
+ const todayKey=dayKey(today);
+ const daily=useMemo(()=>dailyFor(todayKey)!,[todayKey]);
+ const localStreak=dailyStreak(Object.keys(save.stars).filter(k=>k.startsWith('daily-')).map(k=>k.slice(6)),todayKey.slice(6)).count;
+ const streak=player.data?.streak?.count??localStreak;
+ const stardust=(player.data?.signedIn?player.data.wallet||0:0)+player.localDust;
+
+ const record=(o:Outcome)=>{
+  const before=save.stars[o.key]??0,chapter=/^\d+$/.test(o.key)?Math.floor((Number(o.key)-1)/10):-1;
+  const stars={...save.stars,[o.key]:Math.max(before,o.stars)},completes=chapter>=0&&!constellationDone(save.stars,chapter)&&constellationDone(stars,chapter);
+  keep({...save,stars,perfect:o.perfect?{...save.perfect,[o.key]:1}:save.perfect,routes:o.route&&chapter>=0?{...save.routes,[o.key]:o.route}:save.routes,story:completes?[...new Set([...save.story,chapter])]:save.story,last:chapter>=0?Number(o.key)-1:save.last});
+  if(o.stars>before||o.key.startsWith('daily-'))void player.finish(o.key,o.actions,o.stars);
+  if(completes){setStoryFor({key:o.key,text:story[chapter]});setFeel({key:o.key,chapter});if(chapter===2||chapter===8)say(`New palette: ${chapter===2?'Sunset':'Aurora'}. Choose it in Settings.`);}
  };
- const rotateTile=(index:number)=>{const r=runRef.current;if(!Number.isInteger(index)||index<0||index>=r.board.length)throw new Error('Tile index is out of range');if(r.puzzle.locked.includes(index))return {solved:false,moves:r.moves};if(illuminate(r.board,r.puzzle).solved)return {solved:true,moves:r.moves};const board=r.board.map((m,i)=>i===index?rotate(m):m);const next:Run={...r,board,moves:r.moves+1,actions:r.actions?[...r.actions,{kind:'rotate',index}]:undefined,undo:[...r.undo.slice(-99),r.board]};completionPending.current=illuminate(board,r.puzzle).solved;commit(next);setSpin({at:index,tick:next.moves});connectionFeedback(r.board,board,r.puzzle);vibrate();return {solved:illuminate(board,r.puzzle).solved,moves:next.moves};};
- const choose=(index:number)=>{if(!Number.isInteger(index)||index<0||index>=90)throw new Error('Puzzle number must be between 1 and 90');if(index>=33&&!trialRef.current){setPanel('shop');return false;}if(!canPlay(index,saveRef.current.stars,trialRef.current)){announce('Finish the previous puzzle to unlock this one.');return false;}persistRun();commit(saveRef.current.stars[String(index+1)]?start(data.campaign[index]):restoreRun(runs.current[String(index+1)],data.campaign[index])||start(data.campaign[index]));setSave(s=>({...s,last:index}));setPanel(null);return true;};
- const advance=()=>{if(run.daily)choose(resumeIndex(save.last,save.stars,trialRef.current));else if(run.puzzle.id===90)setPanel('levels');else choose(run.puzzle.id);};
- const nextPuzzle=()=>{if(!lit.solved||adOpen)return;const payable=!run.daily&&run.puzzle.id>=33&&!trialRef.current;if(!payable&&adPolicy.current.ready(adMode,Date.now(),adFree)){adPolicy.current.shown();adContinuation.current=advance;setAdOpen(true);}else advance();};
- const dismissAd=()=>{setAdOpen(false);const next=adContinuation.current;adContinuation.current=null;next?.();};
- const beginDaily=()=>{persistRun();const now=new Date(),key='daily-'+now.toISOString().slice(0,10),p=data.daily[dailyIndex(now)];commit(restoreRun(runs.current[key],p,true,key)||start(p,true,key));setPanel(null);};
- const nudge=()=>{const r=runRef.current;if(illuminate(r.board,r.puzzle).solved)return;setHint(explainHint(r.board,r.puzzle));};
- const applyHint=()=>{const r=runRef.current;if(!hint||illuminate(r.board,r.puzzle).solved)return;const board=r.board.map((m,i)=>i===hint.at?r.puzzle.solution[i]:m);completionPending.current=illuminate(board,r.puzzle).solved;commit({...r,board,moves:r.moves+1,hints:r.hints+1,actions:r.actions?[...r.actions,{kind:'hint',index:hint.at}]:undefined,undo:[...r.undo.slice(-99),r.board]});connectionFeedback(r.board,board,r.puzzle);};
- const undo=()=>{const r=runRef.current;if(!r.undo.length||illuminate(r.board,r.puzzle).solved)return;commit({...r,board:r.undo[r.undo.length-1],moves:r.moves+1,actions:r.actions?[...r.actions,{kind:'undo'}]:undefined,undo:r.undo.slice(0,-1)});};
- useEffect(()=>{const context=(document as Document&{modelContext?:ModelContext}).modelContext;if(!context?.registerTool)return;const life=new AbortController();const register=(tool:Parameters<ModelContext['registerTool']>[0])=>{try{void Promise.resolve(context.registerTool(tool,{signal:life.signal})).catch(()=>{});}catch{}};
- register({name:'read_prism_puzzle',description:'Read the current puzzle, tile ports, rotations and completion. Tile indices are zero-based.',inputSchema:{type:'object',properties:{},additionalProperties:false},annotations:{readOnlyHint:true},execute:()=>{const r=runRef.current;return {puzzle:r.puzzle.id,size:r.puzzle.size,locked:r.puzzle.locked,filters:r.puzzle.filters,receivers:r.puzzle.receivers,board:r.board,ports:r.board.map(ports),moves:r.moves,solved:illuminate(r.board,r.puzzle).solved};}});
- register({name:'rotate_prism_tiles',description:'Rotate the listed zero-based tile indices clockwise, in order, on the current puzzle. Stops when solved.',inputSchema:{type:'object',properties:{indices:{type:'array',items:{type:'integer',minimum:0},minItems:1,maxItems:100}},required:['indices'],additionalProperties:false},annotations:{readOnlyHint:false},execute:(input:unknown)=>{const v=input as {indices?:number[]};if(!v||!Array.isArray(v.indices)||v.indices.length<1||v.indices.length>100||v.indices.some(i=>!Number.isInteger(i)||i<0||i>=runRef.current.board.length))throw new Error('Provide 1–100 valid tile indices');for(const i of v.indices)rotateTile(i);return {moves:runRef.current.moves,solved:illuminate(runRef.current.board,runRef.current.puzzle).solved};}});
- return()=>life.abort();},[]);
- const activeTheme=themes.find(t=>t.id===save.theme)||themes[0];
- const after=run.puzzle.id>30&&!run.daily;
- const tutorial=!run.daily&&run.puzzle.id<=3;
- const guide=tutorial&&run.puzzle.id<3?explainHint(run.board,run.puzzle)?.at:undefined;
- const chapterStart=after?31:1;
- const chapterCount=after?60:30;
- const chart=Array.from({length:chapterCount},(_,i)=>({id:chapterStart+i,x:12+(i%10)*19.5,y:14+Math.floor(i/10)*20+(i%2)*6}));
- return <main className={'game-shell intensity-'+intensity+(urgent?' urgent':'')+(lit.solved?' journey-completing':'')} style={{'--beam':activeTheme.color,'--primary':activeTheme.color,'--pulse-speed':`${3.4-intensity*.45}s`} as React.CSSProperties}>
- <header className="topbar"><a href="/" className="wordmark" aria-label="Prism Path home"><span className="brand-symbol">◈</span> PRISM PATH</a><span className="edition">A little light. A little logic.</span><div className="top-actions"><button className="icon-button atlas-access" onClick={()=>setPanel('atlas')} aria-label="Open constellation progress and star map" title="Constellations and star map"><Sparkles size={20}/></button><span className="star-total"><Star size={16}/>{total}</span><button className="icon-button" onClick={()=>setMediaPanel(true)} aria-label="Open play settings"><Settings2 size={20}/></button><button className="icon-button" onClick={()=>setPanel('shop')} aria-label="Open shop"><ShoppingBag size={20}/></button></div></header>
- <div className="mode-access"><button className="quiet" onClick={()=>{persistRun();onRelax();}}>Relax Mode <span>Unhurried paths, soft light, ambient music</span></button></div><div className="play-layout"><aside className="chapter"><span className="eyebrow">{run.daily?'DAILY MOMENT':after?'CHAPTER 02':'CHAPTER 01'}</span><h1>{run.daily?<>A new<br/>spark.</>:after?<>After<br/>hours.</>:<>First<br/>light.</>}</h1><p>Turn the tiles.<br/>Find your way through.</p><div className="chapter-line"/><span className="eyebrow">THE JOURNEY</span><button className={'chapter-item '+(!after&&!run.daily?'active':'')} onClick={()=>choose(Math.min(29,earned))}><span>01</span> First light <span>{Object.keys(save.stars).filter(k=>/^\d+$/.test(k)&&Number(k)<=30).length} / 30</span></button><button className={'chapter-item '+(after?'active':'')} onClick={()=>choose(30)}><span>02</span> After hours <span>{trial?'60 puzzles':<LockKeyhole size={13}/>}</span></button><button className="quiet" onClick={()=>setPanel('levels')}><Grid2X2 size={17}/> All puzzles</button></aside>
- <section className="play-stage" aria-label="Puzzle game"><div className="level-heading"><div><span className="eyebrow">{run.daily?'DAILY • '+run.key.slice(6):after?'AFTER HOURS':'FIRST LIGHT'}</span><h2>{run.daily?'Today’s light':`Puzzle ${String(run.puzzle.id).padStart(2,'0')}`}</h2></div><div className="move-counter"><strong>{run.moves}</strong><span>rotations · aim {run.puzzle.par}</span><small>{pointTotal.toLocaleString()} total points</small></div></div>
-
- <div className="lesson-card"><span className="eyebrow">{tutorial?`FIRST STEPS · ${run.puzzle.id} / 3`:run.daily?'FOLLOW THE LIGHT':chapterFocus(run.puzzle.id)}</span>{run.puzzle.name&&<strong className="opening-name">{run.puzzle.name}</strong>}<p>{run.puzzle.lesson}</p>{mechanicStage>0&&!run.daily&&<button className="quiet lesson-replay" onClick={()=>setLessonOpen(true)}>Try a practice connection</button>}{tutorial&&<div className="flow-demo" aria-label="Light travels along matching openings"><span>Light</span><i/><i/><i/><span>Exit</span></div>}</div>
- {run.puzzle.paceSeconds>0&&!pace.calm&&!lit.solved&&<div className={'pace-bar '+(urgent?'urgent':'')}><div><strong>{lit.solved?(pace.remaining>0?'Pulse bonus earned':'Path complete'):pace.remaining===0?'Bonus time ended':pace.started?`${score.secondsLeft}s · Pulse bonus`:'Pulse bonus · starts on your first turn'}</strong><span>{pace.remaining===0?'Keep solving—your progress is safe.':`${score.multiplier.toFixed(2)}× now · up to ${score.maxMultiplier.toFixed(2)}× · ${score.points.toLocaleString()} points at this pace`}</span></div><div className="pace-track"><i style={{transform:`scaleX(${pace.remaining/run.puzzle.paceSeconds})`}}/></div></div>}
- {!adFree&&!(!run.daily&&run.puzzle.id<=3)&&adMode!=='between'&&!lit.solved&&<aside className="ad-banner" aria-label="Advertisement preview"><span className="ad-disclosure">AD · PREVIEW</span><span><strong>Advertisement</strong><small>Demo placement · no tracking</small></span><button className="quiet" onClick={()=>setPurchase('noads')}>Remove ads · $1/month</button></aside>}
- {!lit.solved&&<BoardObjectives puzzle={run.puzzle} signal={lit} exitReached={exitReached} onLocate={at=>{setObjectiveAt(at);document.getElementById(`journey-tile-${at}`)?.scrollIntoView({behavior:window.matchMedia('(prefers-reduced-motion: reduce)').matches?'auto':'smooth',block:'center'});}}/>}
- <div className="board-wrap"><div className="board-sparks" aria-hidden="true">{Array.from({length:4+intensity*4},(_,i)=><i key={i} style={{left:`${(i*37+9)%100}%`,top:`${(i*29+7)%100}%`,animationDelay:`${i*.27}s`}}/>)}</div><div className="source-label">ENERGY IN <span>→</span></div><div className={'board '+(lit.solved?'complete':'')} style={{gridTemplateColumns:`repeat(${run.puzzle.size},1fr)`}}>{run.board.map((mask,i)=><button id={`journey-tile-${i}`} key={`${run.key}-${i}`} className={'tile '+(lit.lit.has(i)?'lit ':'')+(objectiveAt===i?'objective-selected ':'')+(run.puzzle.locked.includes(i)?'fixed ':'')+(receiverBlocked&&run.puzzle.receivers.some(r=>r.at===i&&!lit.colors[i]?.includes(r.color))?'receiver-needs-light ':'')+(exitReached&&darkLocks.includes(i)?'receiver-needs-light ':'')+(energized.includes(i)?'new-energy ':'')+(hint?.at===i||guide===i?'guided ':'')} style={{'--flow-delay':`${Math.min(lit.depth[i]||0,14)*35}ms`,'--tile-beam':lit.colors[i]?.includes('violet')?'#c6a5ff':lit.colors[i]?.includes('amber')?'#ffc777':activeTheme.color} as React.CSSProperties} disabled={!loaded||lit.solved||run.puzzle.locked.includes(i)} onClick={()=>rotateTile(i)} onKeyDown={e=>{const offsets:Record<string,number>={ArrowUp:-run.puzzle.size,ArrowDown:run.puzzle.size,ArrowLeft:-1,ArrowRight:1};const offset=offsets[e.key];if(offset===undefined)return;e.preventDefault();const buttons=Array.from(e.currentTarget.parentElement?.querySelectorAll<HTMLButtonElement>('button')||[]);let next=i+offset;while(next>=0&&next<buttons.length&&buttons[next].disabled)next+=offset;buttons[next]?.focus();}} aria-label={`Row ${Math.floor(i/run.puzzle.size)+1}, column ${i%run.puzzle.size+1}; ${run.puzzle.locked.includes(i)?'locked, '+(lit.lit.has(i)?'activated':'needs light')+'; ':''}${run.puzzle.filters[i]?'color prism '+run.puzzle.filters[i]+'; ':''}${run.puzzle.receivers.find(r=>r.at===i)?.color||''} ${run.puzzle.receivers.some(r=>r.at===i)?'receiver, '+(run.puzzle.receivers.filter(r=>r.at===i).every(r=>lit.colors[i]?.includes(r.color))?'activated':'needs matching light')+'; ':''}${ports(mask)}; ${lit.lit.has(i)?'lit':'unlit'}. ${run.puzzle.locked.includes(i)?'Turn its neighbors to connect it.':'Rotate clockwise.'}`}><svg key={spin?.at===i?`${run.key}-${spin.tick}`:run.key} className={spin?.at===i?'tile-turn':''} viewBox="0 0 100 100" aria-hidden="true">{[1,2,4,8].filter(b=>mask&b).map(b=><path key={b} d={`M50 50 L${b===2?100:b===8?0:50} ${b===1?0:b===4?100:50}`} className="channel"/>)}<circle cx="50" cy="50" r="5" className="node"/>{lit.lit.has(i)&&<circle className="flow-ring" cx="50" cy="50" r="16"/>}</svg>{run.puzzle.locked.includes(i)&&<span className={"tile-badge"+(lit.lit.has(i)?" lock-active":"")}><LockKeyhole size={12}/>{lit.lit.has(i)&&<Check size={10}/>}</span>}{run.puzzle.filters[i]&&<span className={'tile-badge prism '+run.puzzle.filters[i]}>P·{run.puzzle.filters[i]==='amber'?'A':'V'}</span>}{run.puzzle.receivers.filter(r=>r.at===i).map(r=><span key={r.color} className={'receiver '+r.color+(lit.colors[i]?.includes(r.color)?' received':'')}>{r.color==='mint'?'◇':r.color==='amber'?'A':'V'}{lit.colors[i]?.includes(r.color)&&<small>✓</small>}</span>)}</button>)}<DustToast notice={player.dustNotice} delayMs={lit.solved?1700:0}/><EnergyStream board={run.board} puzzle={run.puzzle} signal={lit} color={activeTheme.color}/>{lit.solved&&completedScore&&completedScore.targetBonus>0&&<div className="board-target-flourish" role="status"><div className="target-award"><Sparkles size={24}/><div><strong>{run.moves<run.puzzle.par?'Better than the target!':'Move target achieved!'}</strong><p>+500 bonus points · {run.moves} / {run.puzzle.par} moves</p></div></div></div>}</div><div className={'target-label '+(lit.solved?'connected':'')}><span>→</span> ENERGY OUT</div></div>
- {lit.solved&&<div className="next-puzzle-access"><button className="primary-button" onClick={nextPuzzle}>{run.daily?'Back to journey':run.puzzle.id===90?'All puzzles':run.puzzle.id===30?'Explore After hours':'Next puzzle'}<ArrowRight size={17}/></button></div>}
- <p className="energy-status" aria-live="polite">{exitReached&&darkLocks.length?'Exit connected. The highlighted locked tiles must receive light too.':receiverBlocked?'Exit connected. Activate the highlighted receivers to complete the puzzle.':!(run.board[0]&8)?'Open the first tile toward the glowing inlet on the left.':energized.length?`${energized.length} ${energized.length===1?'tile is':'tiles are'} receiving energy.`:'Carry energy from the upper-left inlet to the lower-right outlet.'}</p>
- {!lit.solved&&<><div className="board-actions"><button className="quiet" onClick={()=>setResetOpen(true)}><RotateCw size={17}/> Reset</button><button className="quiet" onClick={undo} disabled={!run.undo.length||lit.solved}><Undo2 size={17}/> Undo</button><button className="hint" onClick={nudge} disabled={lit.solved}><Sparkles size={17}/> A little nudge</button></div><p className="helper-note">Explanations are free. Automatic turns count as hints.</p></>}
- <div className="account-result" aria-live="polite">{player.reward&&!lit.solved&&<p>{player.reward} <button className="quiet" onClick={()=>setPanel('player')}>View rewards</button></p>}{player.error&&<p>Account sync needs attention. <button className="quiet" onClick={()=>setPanel('player')}>Review</button></p>}</div><div className="result-zone">{lit.solved?<CompletionSummary key={`${run.key}:${completedScore?'earned':'saved'}:${resetTick}`} score={displayedScore} rating={stars} moves={run.moves} hints={run.hints} puzzleId={run.puzzle.id} daily={run.daily} stars={save.stars} fresh={newStar===run.key} milestone={constellationJustCompleted} best={save.scores[run.key]||displayedScore.points} total={pointTotal} onOpen={()=>setPanel('atlas')}/>:<p className="instruction">{run.puzzle.receivers.length?`${lit.received} / ${run.puzzle.receivers.length} receivers lit · connect the exit too`:'Follow the light from the entrance to the exit.'}</p>}</div>
- {hint&&<div className="hint-card" role="status"><p>{hint.text}</p><div><button className="quiet" onClick={()=>setHint(null)}>I’ll try it</button><button className="hint" onClick={applyHint}>Turn it for me</button></div></div>}
-
- {!run.daily&&!lit.solved&&<Constellation id={run.puzzle.id} stars={save.stars} onOpen={()=>setPanel('atlas')}/>}
-<div className="mobile-nav"><button className="quiet" onClick={()=>setPanel('player')}><Star size={17}/> Player · {(player.data?.signedIn?player.data.wallet||0:player.localDust)} ✧</button><button className="quiet" onClick={()=>setPanel('levels')}><Grid2X2 size={17}/> Puzzles</button><button className="quiet" onClick={()=>setPanel('daily')}><Sun size={17}/> Daily moment</button></div></section>
- <aside className="right-rail"><div className="note"><span className="eyebrow">HOW TO PLAY</span><h3>Follow the glow.</h3><p>Turn each tile a quarter turn. Connect the light at the top left to the exit at the bottom right.</p><div className="legend"><span>Arrow keys: move focus · Space / Enter: rotate</span>{run.puzzle.stage>=21&&<span>◇ Receiver</span>}{run.puzzle.stage>=41&&<><span>P·A Amber prism · P·V Violet prism</span><span>A Amber · V Violet</span></>}</div><p>{run.puzzle.stage<21?'Connect the entrance to the exit. Extra tiles can stay dark.':run.puzzle.stage<41?'Light every diamond receiver and reach the exit.':'Light every receiver with its matching color and reach the exit.'}</p></div><button className="daily-card" onClick={()=>setPanel('daily')}><span className="daily-icon"><Sun size={23}/></span><span><strong>A daily moment</strong><small>One fresh path, every day</small></span><ArrowRight size={16}/></button><button className="quiet" onClick={()=>choose(0)}>Replay the first steps</button><button className="daily-card" onClick={()=>setPanel('player')}><span className="daily-icon"><Star size={23}/></span><span><strong>{player.data?.profile?.name||'Player & leaderboard'}</strong><small>{player.data?.profile?`${player.data.wallet||0} Stardust · view rewards`:'Save your journey and earn rewards'}</small></span><ArrowRight size={16}/></button><span className="small-note">{player.data?.profile?'Completed account puzzles sync across devices.':'Guest progress stays on this device.'}</span></aside></div>
- {sample.error&&<p className="storage-warning" role="status">{sample.error}</p>}{music.error&&<p className="storage-warning" role="status">{music.error}</p>}{storageWarning&&<p className="storage-warning" role="status">Device storage is unavailable. You can play, but progress may not be saved.</p>}<div className="toast" role="status">{notice}</div>
- <Dialog open={panel!==null} onOpenChange={open=>{if(!open)setPanel(null);}}><DialogContent className="game-dialog"><DialogTitle className="dialog-title">{panel==='player'?'Your place in the sky.':panel==='shop'?'A little more light.':panel==='atlas'?'Your connected sky.':panel==='daily'?'Your daily sky.':'Your journey.'}</DialogTitle><DialogDescription>{panel==='player'?'Your profile, streaks, Stardust and leaderboard.':panel==='shop'?'Remove ads monthly, or choose optional one-time extras.':panel==='atlas'?'A lasting picture of every constellation you complete.':panel==='daily'?'A calendar of the moments you made time for.':'Illuminate nine constellations. Thirty free puzzles and three free After hours samples.'}</DialogDescription>
- {panel==='shop'?<><StardustShop player={player} onAccount={()=>setPanel('player')} onPreview={previewUnlock} onSample={()=>choose(30)}/><div className="preview-label">PLAYABLE PREVIEW · No real payments</div><div className="extra-card adfree-feature"><span className="eyebrow">PLAY WITHOUT INTERRUPTIONS</span><h3>Remove ads</h3><p>Remove both ad placements while subscribed. Proposed auto-renewing subscription; cancel anytime.</p><div className="extra-bottom"><span>$1/month<small>proposed recurring price</small></span><button className="primary-button" disabled={adFree} onClick={()=>setPurchase('noads')}>{adFree?'Ad-free demo active':'Preview ad-free'}</button></div></div><div className="pack-card"><span className="eyebrow">CHAPTER 02</span><h3>After hours</h3><p>60 puzzles that gradually introduce color prisms and paired beams. Restore a second constellation. Try the first three levels free.</p><button className="sample-button" onClick={()=>choose(30)}>Play 3 free sample puzzles <ArrowRight size={16}/></button><div className="pack-bottom"><span className="price">$3.99 <small>planned one-time price</small></span><button className="primary-button" onClick={()=>setPurchase('pack')}>{trial?'Open chapter':'Try chapter'}<ArrowRight size={16}/></button></div></div><h4 className="theme-heading">Change the atmosphere</h4><div className="theme-list">{themes.map(t=><button key={t.id} className={'theme-option '+(save.theme===t.id?'selected':'')} onClick={()=>{if(t.id==='mint'||themeTrial.includes(t.id)){setSave(s=>({...s,theme:t.id}));}else setPurchase(t.id);}}><span className="theme-swatch" style={{background:t.color}}/ ><span><strong>{t.name}</strong><small>{t.price}{t.id!=='mint'?' · one time':''}</small></span>{save.theme===t.id?<Check size={18}/>:t.id!=='mint'?<span className="try-label">Try</span>:null}</button>)}</div><h4 className="theme-heading">Make it your own</h4><div className="extras-list">{extras.filter(item=>item.id!=='noads').map(item=><div key={item.id} className="extra-card"><div><h3>{item.name}</h3><p>{item.description}</p></div><div className="extra-bottom"><span>{item.price}<small>planned one-time price</small></span><button className="primary-button" disabled={upgrades.includes(item.id)} onClick={()=>setPurchase(item.id)}>{upgrades.includes(item.id)?'Trial unlocked':'Try upgrade'}</button></div></div>)}</div><h4 className="theme-heading">Listen before you choose</h4>{tracks.map(t=><div className="track-row" key={t.id}><div><strong>{t.name}</strong><small>{t.free?'Included':'Night music pack'}</small></div><button className="quiet" onClick={()=>sample.active===t.id?sample.stop():void sample.play(t.id)}>{sample.active===t.id?'Stop':'Preview 8 sec'}</button><button className="hint" onClick={()=>{sample.stop();if(t.free||upgrades.includes('music')){setMusicTrack(t.id);if(!music.enabled)music.toggle();}else setPurchase('music');}}>{musicTrack===t.id?'Selected':t.free||upgrades.includes('music')?'Use':'Unlock'}</button></div>)}<div className="track-row"><div><strong>Crystal sounds</strong><small>Tile & completion effects</small></div><button className="quiet" onClick={()=>tone(true,'crystal',true)}>Hear chime</button><button className="hint" onClick={()=>upgrades.includes('sfx')?setSoundStyle('crystal'):setPurchase('sfx')}>{soundStyle==='crystal'?'Selected':'Use'}</button></div><button className="quiet" onClick={()=>setSoundStyle('classic')}>Use included classic sounds</button><p className="helper-note">Preview unlocks last for this session. The iPhone edition uses Apple’s purchase confirmation and restoration.</p></>:<>{panel==='player'?<PlayerPanel player={player} onPreview={previewUnlock} onSample={()=>choose(30)}/>:panel==='atlas'?<SkyMenu stars={save.stars} initialGroup={run.daily?undefined:constellationGroup} revealGroup={constellationJustCompleted?constellationGroup:-1}/>:panel==='daily'?<DailyCalendar stars={save.stars} date={date} onPlay={beginDaily}/>:<JourneyMap stars={save.stars} trial={trial} current={run.daily?0:run.puzzle.id} onChoose={choose}/>}</>}
-
- </DialogContent></Dialog>
- <Dialog open={purchase!==null} onOpenChange={open=>{if(!open)setPurchase(null);}}><DialogContent className="confirm-dialog"><DialogTitle>Try {purchase==='pack'?'After hours':extras.find(t=>t.id===purchase)?.name||themes.find(t=>t.id===purchase)?.name}</DialogTitle><DialogDescription>{purchase==='noads'?'Proposed price: $1/month, renewing monthly until canceled. This demo only hides ads for this session: no subscription starts and no payment is collected.':'This is a free preview. No payment information is requested, and you won’t be charged.'}</DialogDescription><button className="primary-button" onClick={()=>{if(purchase==='pack'){trialRef.current=true;setTrial(true);choose(save.last>=30?resumeIndex(save.last,save.stars,true):30);}else if(purchase&&extras.some(e=>e.id===purchase)){setUpgrades(v=>[...v,purchase]);if(purchase==='sfx')setSoundStyle('crystal');}else if(purchase){setThemeTrial(v=>[...v,purchase]);setSave(s=>({...s,theme:purchase}));}setPurchase(null);announce('Preview unlocked. Enjoy a little more light.');}}>Unlock free preview <ArrowRight size={17}/></button></DialogContent></Dialog>
- <Dialog open={mediaPanel} onOpenChange={setMediaPanel}><DialogContent className="game-dialog"><DialogTitle>Play settings</DialogTitle><DialogDescription>Music is on by default. Your browser may wait for your first tap. You can mute it at any time.</DialogDescription><button data-music-toggle className="primary-button" onClick={music.toggle}><Music2 size={18}/>{music.enabled?'Pause music':'Play music'}</button><button className="quiet" disabled={!music.enabled||music.volume===0} onClick={()=>music.celebrate()}>Preview completion music</button><label id="music-volume-label">Music volume · {Math.round(music.volume*100)}%</label><Slider aria-labelledby="music-volume-label" value={[Math.round(music.volume*100)]} min={0} max={100} step={1} onValueChange={v=>music.setVolume((Array.isArray(v)?v[0]:v)/100)}/><button className="quiet" onClick={()=>setSave(s=>({...s,sound:!s.sound}))}>{save.sound?'Mute tile & connection sounds':'Enable tile & connection sounds'}</button><div className="calm-setting"><label htmlFor="haptic-mode">Touch feedback where supported</label><Switch id="haptic-mode" checked={haptics} onCheckedChange={setHaptics}/></div><p className="helper-note">iPhone and iPad browsers may not support vibration. Reduced motion follows your device setting.</p><div className="calm-setting"><label htmlFor="calm-mode">Calm mode · hide the bonus timer</label><Switch id="calm-mode" checked={pace.calm} onCheckedChange={pace.setCalm}/></div><p className="helper-note">Later levels have shorter bonus-time targets. You can always finish a puzzle after the timer ends.</p><button className="quiet" onClick={()=>{setMediaPanel(false);setRestartGameOpen(true);}}>Restart entire game</button></DialogContent></Dialog>
- <Dialog open={adOpen} onOpenChange={open=>{if(!open)dismissAd();}}><DialogContent className="game-dialog ad-interstitial"><DialogTitle>A short pause.</DialogTitle><DialogDescription>ADVERTISEMENT PREVIEW · This is a demonstration. No advertiser is paying for this impression.</DialogDescription><div className="ad-demo-creative"><span>◈</span><strong>Room for a little inspiration.</strong><p>A sponsor’s message appears here between puzzles.</p></div><button className="primary-button" onClick={dismissAd}>Continue to game <ArrowRight size={18}/></button><p className="helper-note">Your progress is saved. Music resumes when you return.</p></DialogContent></Dialog>
- <Dialog open={resetOpen} onOpenChange={setResetOpen}><DialogContent className="confirm-dialog"><DialogTitle>Restart this puzzle?</DialogTitle><DialogDescription>Your saved stars stay safe. This clears the current board, moves and hints.</DialogDescription><button className="primary-button" onClick={()=>{commit(start(run.puzzle,run.daily,run.key));setResetTick(v=>v+1);setResetOpen(false);}}>Restart puzzle</button><button className="quiet" onClick={()=>setResetOpen(false)}>Keep playing</button></DialogContent></Dialog>
- <Dialog open={restartGameOpen} onOpenChange={setRestartGameOpen}><DialogContent className="confirm-dialog"><DialogTitle>Restart the entire game?</DialogTitle><DialogDescription>This permanently clears campaign and daily progress, scores, stars, constellations and saved puzzles on this device, plus account scores and streak progress when signed in. Stardust and earned unlocks stay available. Previously collected Stardust rewards cannot be claimed again by restarting. You will return to puzzle 1. Your sound settings and unlocked purchases or previews stay available.</DialogDescription><button className="primary-button" disabled={player.busy} onClick={()=>void restartGame()}>Erase progress and restart</button><button className="quiet" onClick={()=>setRestartGameOpen(false)}>Keep my progress</button></DialogContent></Dialog>
- <MechanicLesson key={mechanicStage} stage={mechanicStage} open={lessonOpen} onClose={closeLesson}/>
- </main>;
+ const goSky=(chapter?:number)=>setScreen({name:'sky',chapter:chapter??Math.min(8,Math.floor(Math.max(0,nextPlayable(save.stars,fullSky,0))/10))});
+ const next=()=>{
+  if(!screen||screen.name!=='play'){goSky();return;}
+  const i=nextPlayable(save.stars,fullSky,screen.index+1);
+  if(i<0){goSky(8);return;}
+  if(!chapterOpen(Math.floor(i/10),fullSky)||Math.floor(i/10)!==Math.floor(screen.index/10)&&showSky){goSky(Math.floor(i/10));return;}
+  setScreen({name:'play',index:i});
+ };
+ const share=(o:Outcome,progress:number[])=>{
+  const date=todayKey.slice(6),text=shareText({date,weekday:weekdayNames[today.getUTCDay()],stars:o.stars,radiant:o.radiant,perfect:o.perfect,turns:o.turns,hints:o.actions.filter(a=>a.k==='hint').length,progress});
+  if(navigator.share)void navigator.share({text}).catch(()=>{});else void navigator.clipboard?.writeText(text).then(()=>say('Result copied. It shows your stars and turns, never the route.'));
+ };
+ const restart=async()=>{
+  if(player.data?.profile&&!await player.reset()){say('Account progress could not be reset. Please retry.');return;}
+  clearRuns();keep(blankSave());setPanel(null);setScreen({name:'play',index:0});say('A fresh journey begins. Your Stardust stays.');
+ };
+ const openFullSky=()=>{setPanel('shop');};
+ const previewFullSky=()=>{setPreview(true);try{sessionStorage.setItem(PREVIEW,'1');}catch{}say('Full Sky preview is open for this session.');};
+ const notice=player.notice,clearNotice=player.clearNotice;
+ useEffect(()=>{if(!notice)return;const t=setTimeout(clearNotice,3600);return()=>clearTimeout(t);},[notice,clearNotice]);
+ if(!hydrated)return <main className="loading" aria-busy="true"/>;
+ // After a constellation is restored, one optional question rides along in the results card.
+ const feelPrompt=feel&&<div className="feel"><p>You restored {constellationNames[feel.chapter]}. How did it feel?</p><div>{(['Too easy','Just right','Too hard'] as const).map((label,k)=><button key={label} className="secondary" onClick={()=>{stat('c'+feel.chapter,(`feel-${k+1}`) as 'feel-1');setFeel(null);say('Thank you.');}}>{label}</button>)}<button className="text-button" onClick={()=>setFeel(null)}>Skip</button></div></div>;
+ let content;
+ if(screen.name==='sky')content=<SkyHub still={settings.still} stars={save.stars} routes={save.routes} fullSky={fullSky} initial={screen.chapter} stardust={stardust} streak={streak} dailyDone={!!save.stars[todayKey]} showModes={showModes} showShop={showShop}
+  onPlay={i=>setScreen({name:'play',index:i})} onDaily={()=>setPanel('daily')} onDrift={()=>setScreen({name:'drift'})} onPulse={()=>setScreen({name:'pulse'})} onShop={()=>setPanel('shop')} onPlayer={()=>setPanel('player')} onSettings={()=>setPanel('settings')} onFullSky={openFullSky}/>;
+ else if(screen.name==='drift')content=<Drift settings={settings} palette={palette} onBack={()=>goSky()} onSettings={()=>setPanel('settings')}/>;
+ else if(screen.name==='pulse')content=<Pulse settings={settings} palette={palette} player={player} onBack={()=>goSky()} onAccount={()=>setPanel('player')}/>;
+ else if(screen.name==='daily')content=<PlayScreen key={daily.key} puzzle={daily} title={`Today · ${weekdayNames[today.getUTCDay()]}`} subtitle={`${ideas[weekdayIdeas[today.getUTCDay()]]} · ${todayKey.slice(6)}`} caption={ideaLines[weekdayIdeas[today.getUTCDay()]]} best={save.stars[todayKey]??0} settings={settings} palette={palette} showSky nextLabel="Back to the sky" onBack={()=>goSky()} onNext={()=>goSky()} onSettings={()=>setPanel('settings')} onRecord={record} onShare={share} stat={stat} dust={notice}/>;
+ else{const p=campaign[screen.index],chapter=Math.floor(screen.index/10),last=screen.index%10===9;
+  content=<PlayScreen key={p.key} puzzle={p} title={`${screen.index+1} · ${p.name}`} subtitle={`${constellationNames[chapter]} · ${ideas[chapter]}`} caption={screen.index===0&&!solvedN?`${prologue} ${p.lesson}`:p.lesson} best={save.stars[p.key]??0} settings={settings} palette={palette} showSky={showSky} nextLabel={last?'See the sky':'Next puzzle'} story={storyFor?.key===p.key?storyFor.text:undefined} extra={feel?.key===p.key?feelPrompt:undefined}
+   onBack={()=>goSky(chapter)} onNext={last&&showSky?()=>goSky(chapter):next} onSettings={()=>setPanel('settings')} onRecord={record} stat={stat} dust={notice}/>;}
+ return <div className={'app atmo-'+(screen.name==='play'?Math.floor(screen.index/10):screen.name==='sky'?screen.chapter:0)+(settings.still?' still':'')}>
+  {content}
+  <Dialog open={panel!==null} onOpenChange={o=>{if(!o)setPanel(null);}}>
+   <DialogContent className="panel">{panel&&<><DialogTitle>{panelTitles[panel][0]}</DialogTitle><DialogDescription>{panelTitles[panel][1]}</DialogDescription>
+    {panel==='settings'&&<SettingsPanel settings={settings} update={update} owned={owned} earnedPalettes={earned} onRestart={()=>void restart()}/>}
+    {panel==='shop'&&<ShopPanel player={player} fullSky={fullSky} earnedPalettes={earned} onFullSky={previewFullSky} onAccount={()=>setPanel('player')}/>}
+    {panel==='player'&&<PlayerPanel player={player} localStreak={localStreak}/>}
+    {panel==='daily'&&<DailyPanel stars={save.stars} today={today} streak={streak} onPlay={()=>{setPanel(null);setScreen({name:'daily'});}}/>}
+   </>}</DialogContent>
+  </Dialog>
+  {(toast||notice)&&<div className="toasts">
+   {toast&&<output className="toast">{toast}</output>}
+   {notice&&<output className="dust-toast" key={notice.id}>+{notice.amount} ✧ <small>{notice.label}</small></output>}
+  </div>}
+ </div>;
 }
