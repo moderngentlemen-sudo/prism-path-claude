@@ -91,7 +91,9 @@ export default function Game(){
  };
  const share=(o:Outcome,progress:number[])=>{
   const date=todayKey.slice(6),text=shareText({date,weekday:weekdayNames[today.getUTCDay()],stars:o.stars,radiant:o.radiant,perfect:o.perfect,turns:o.turns,hints:o.actions.filter(a=>a.k==='hint').length,progress});
-  if(navigator.share)void navigator.share({text}).catch(()=>{});else void navigator.clipboard?.writeText(text).then(()=>say('Result copied. It shows your stars and turns, never the route.'));
+  // Share where the browser allows it; otherwise, or if sharing is refused, copy the text.
+  const copy=()=>{if(!navigator.clipboard){say('This browser cannot copy the result.');return;}navigator.clipboard.writeText(text).then(()=>say('Result copied. It shows your stars and turns, never the route.'),()=>say('This browser blocked copying the result.'));};
+  if(navigator.share)navigator.share({text}).catch((e:unknown)=>{if((e as {name?:string})?.name!=='AbortError')copy();});else copy();
  };
  const restart=async()=>{
   if(player.data?.profile&&!await player.reset()){say('Account progress could not be reset. Please retry.');return;}
